@@ -70,6 +70,28 @@ button,input,select,textarea{font:inherit;color:inherit}
 #viewer:not(:empty){position:fixed;inset:0;background:#000e;z-index:30;display:flex;align-items:center;justify-content:center;padding:10px}
 #viewer img{max-width:100%;max-height:100%;border-radius:8px}
 #viewer button{position:absolute;top:calc(10px + env(safe-area-inset-top));right:12px}
+.statgrid .card{margin-bottom:12px}
+@media (min-width:760px){
+ body{font-size:16px}
+ #app{max-width:1040px;padding-left:24px;padding-right:24px}
+ .nav div{max-width:1040px}
+ .kpis{gap:12px}.kpi{padding:14px 10px}.kpi b{font-size:21px}.kpi span{font-size:12.5px}
+ .card{padding:16px}
+ .calcard{padding:18px 16px}
+ .ctitle{font-size:18px}.csub{font-size:13.5px}
+ .cal{gap:8px}.cal .wd{font-size:12px;padding:4px 0}
+ .cell{aspect-ratio:1/.72;padding:8px 6px;border-radius:12px}
+ .cell .d{font-size:13px}.cell .p{font-size:16px}.cell .n{font-size:11px}
+ .wkc{padding:8px 6px;border-radius:12px}.wkc span{font-size:11px}.wkc b{font-size:16px}
+ .legend{font-size:12px;gap:6px 16px}.legbar{height:7px}
+ .statgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+ .statgrid .card{margin:0}
+ .sheet-bg{align-items:center;padding:24px}
+ .sheet{border-radius:20px;border:1px solid var(--line);max-width:680px;max-height:88vh}
+ .nav button{font-size:12px}
+ .shot,.addshot{width:96px;height:96px}
+ .thumbs img{width:84px;height:84px}
+}
 .sheet-bg{position:fixed;inset:0;background:#000a;z-index:10;display:flex;align-items:flex-end;justify-content:center}
 .sheet{background:var(--card);border-top:1px solid var(--line);border-radius:18px 18px 0 0;width:100%;max-width:560px;max-height:92vh;overflow:auto;padding:14px 14px calc(18px + env(safe-area-inset-bottom))}
 .sheet h2{margin:0 0 10px;font-size:17px}
@@ -111,7 +133,7 @@ const MISTAKES=['Aucune','Revenge trading','Overtrading','FOMO','SL déplacé','
 const PAIRS=['EURUSD','GBPUSD','XAUUSD','USDJPY','GBPJPY','AUDUSD','USDCAD','NAS100','US30','BTCUSD'];
 const MOIS=['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
 const JOURS=['DIM','LUN','MAR','MER','JEU','VEN','SAM'];
-let S={capital:1000,trades:[]};
+let S={capital:1000,cu:0,trades:[],tomb:{}};
 let storageOK=true;
 let tab='cal',period='all';
 const now=new Date();
@@ -133,10 +155,12 @@ function load(){
     const r=localStorage.getItem(KEY);
     if(r){const o=JSON.parse(r);if(o&&Array.isArray(o.trades))S=o}
   }catch(e){storageOK=false}
+  S.tomb=S.tomb||{};S.cu=S.cu||0;S.trades.forEach(t=>{if(!t.u)t.u=1});
 }
-function save(){
+function saveLocal(){
   try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){storageOK=false}
 }
+function save(){saveLocal();scheduleSync(1500)}
 /* ---------- utils ---------- */
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pad=n=>String(n).padStart(2,'0');
@@ -183,7 +207,7 @@ function group(list,key){
 }
 function equitySVG(curve,cap){
   if(curve.length<2)return '<div class="empty">Ajoutez des trades pour voir la courbe d’équité.</div>';
-  const W=360,H=190,pl=8,pr=8,pt=14,pb=18;
+  const W=Math.min(1000,Math.max(340,document.documentElement.clientWidth-56)),H=W>600?260:190,pl=8,pr=8,pt=14,pb=18;
   let mn=Math.min(...curve,cap),mx=Math.max(...curve,cap);
   if(mx===mn){mx+=1;mn-=1}
   const padv=(mx-mn)*.12;mn-=padv;mx+=padv;
@@ -203,6 +227,86 @@ function equitySVG(curve,cap){
   <text x="${W-pr}" y="11" fill="${col}" font-size="11" font-weight="700" text-anchor="end">${money(curve[curve.length-1])}</text></svg>`;
 }
 
+/* ---------- synchronisation GitHub (depot prive) ---------- */
+const SKEY='journal_sync_v1',API='https://api.github.com/repos/';
+let SYNC=null;try{SYNC=JSON.parse(localStorage.getItem(SKEY)||'null')}catch(e){}
+let syncing=false,syncAgain=false,syncTimer=null,syncState=SYNC?'idle':'off',syncMsg='';
+const b64u=t=>btoa(unescape(encodeURIComponent(t)));
+const unb64u=b=>decodeURIComponent(escape(atob(b.replace(/\s/g,''))));
+function abToB64(buf){const b=new Uint8Array(buf);let t='';for(let i=0;i<b.length;i+=0x8000)t+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000));return btoa(t)}
+function syncLabel(){if(!SYNC)return '';return ({idle:'☁',busy:'☁ synchro…',ok:'☁ ✓ '+syncMsg,err:'☁ ⚠ '+syncMsg}[syncState])||'☁'}
+function setSync(st,msg){syncState=st;syncMsg=msg||'';document.querySelectorAll('.syncst').forEach(e=>{e.textContent=syncLabel()})}
+function gh(path,opt){opt=opt||{};return fetch(API+SYNC.repo+'/contents/'+path,Object.assign({},opt,{headers:Object.assign({'Authorization':'Bearer '+SYNC.token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},opt.headers||{})}))}
+function scheduleSync(ms){if(!SYNC)return;if(syncing){syncAgain=true;return}clearTimeout(syncTimer);syncTimer=setTimeout(syncNow,ms||1500)}
+async function upImg(id){const r=await gh('img/'+id+'.jpg',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:'capture',content:IMG[id].split(',')[1]})});return r.ok||r.status===422}
+async function downImg(id){const r=await gh('img/'+id+'.jpg',{cache:'no-store',headers:{'Accept':'application/vnd.github.raw+json'}});if(!r.ok)return false;const d='data:image/jpeg;base64,'+abToB64(await r.arrayBuffer());IMG[id]=d;idbPut(id,d);return true}
+function mergeState(remote){
+  const tomb=Object.assign({},remote.tomb||{});
+  Object.entries(S.tomb||{}).forEach(([k,u])=>{if(!(tomb[k]>=u))tomb[k]=u});
+  const map={};
+  [].concat(remote.trades||[],S.trades).forEach(t=>{const c=map[t.id];if(!c||(t.u||0)>(c.u||0))map[t.id]=t});
+  Object.keys(tomb).forEach(id=>{if(map[id]&&tomb[id]>=(map[id].u||0))delete map[id]});
+  let cap=S.capital,cu=S.cu||0;
+  if(remote.capital!=null&&(remote.cu||0)>cu){cap=remote.capital;cu=remote.cu}
+  return{map,tomb,cap,cu};
+}
+async function syncOnce(){
+  const r=await gh('data.json',{cache:'no-store'});
+  let remote={capital:null,cu:0,trades:[],tomb:{},imgs:[]},sha=null;
+  if(r.status===200){
+    const j=await r.json();sha=j.sha;let txt;
+    if(j.content){txt=unb64u(j.content)}else{const r2=await gh('data.json',{cache:'no-store',headers:{'Accept':'application/vnd.github.raw+json'}});txt=await r2.text()}
+    try{Object.assign(remote,JSON.parse(txt))}catch(e){throw new Error('data.json illisible')}
+  }else if(r.status===404){
+    const rr=await fetch(API+SYNC.repo,{cache:'no-store',headers:{'Authorization':'Bearer '+SYNC.token}});
+    if(rr.status!==200)throw new Error('dépôt introuvable ou jeton sans accès à ce dépôt');
+  }else if(r.status===401||r.status===403)throw new Error('jeton refusé ou expiré');
+  else throw new Error('erreur '+r.status);
+
+  let m=mergeState(remote);
+  const need=new Set();Object.values(m.map).forEach(t=>(t.imgs||[]).forEach(i=>need.add(i)));
+  const rimgs=new Set(remote.imgs||[]);let imgChanged=false,downloaded=false;
+  for(const id of need){if(IMG[id]&&!rimgs.has(id)){if(await upImg(id)){rimgs.add(id);imgChanged=true}}}
+  for(const id of need){if(!IMG[id]&&rimgs.has(id)){if(await downImg(id))downloaded=true}}
+  m=mergeState(remote); /* reprend les modifications faites pendant les transferts */
+
+  let dirty=!sha||imgChanged;
+  const rm={};(remote.trades||[]).forEach(t=>{rm[t.id]=t});
+  const fin=Object.values(m.map);
+  fin.forEach(t=>{if(!rm[t.id]||(rm[t.id].u||0)<(t.u||0))dirty=true});
+  Object.keys(m.tomb).forEach(id=>{if(!((remote.tomb||{})[id]>=m.tomb[id]))dirty=true});
+  if(m.cu>(remote.cu||0))dirty=true;
+
+  const lm={};S.trades.forEach(t=>{lm[t.id]=t.u||0});
+  let changed=downloaded||m.cap!==S.capital||fin.length!==S.trades.length;
+  fin.forEach(t=>{if(lm[t.id]!==(t.u||0))changed=true});
+  S={capital:m.cap,cu:m.cu,trades:fin,tomb:m.tomb};saveLocal();
+  if(changed&&!(document.activeElement&&/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)))render();
+
+  if(dirty){
+    const body={message:'sync',content:b64u(JSON.stringify({capital:m.cap,cu:m.cu,trades:fin,tomb:m.tomb,imgs:Array.from(rimgs)}))};
+    if(sha)body.sha=sha;
+    const pr=await gh('data.json',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(pr.status===409||pr.status===422)return false;
+    if(pr.status===401||pr.status===403||pr.status===404)throw new Error('écriture refusée : le jeton doit avoir « Contents : Read and write » (et le dépôt doit contenir un fichier README)');
+    if(!pr.ok)throw new Error('erreur '+pr.status);
+  }
+  return true;
+}
+async function syncNow(){
+  if(!SYNC)return;
+  if(syncing){syncAgain=true;return}
+  if(!navigator.onLine){setSync('err','hors ligne');return}
+  syncing=true;setSync('busy','');
+  try{
+    let ok=false;
+    for(let i=0;i<3&&!ok;i++)ok=await syncOnce();
+    if(!ok)throw new Error('conflit, réessayez');
+    setSync('ok',new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}));
+  }catch(e){setSync('err',(e&&e.message)||'erreur')}
+  syncing=false;
+  if(syncAgain){syncAgain=false;scheduleSync(800)}
+}
 /* ---------- views ---------- */
 function dm(n){const a=Math.abs(n);const t=a>=100?Math.round(a).toLocaleString('fr-FR'):(Math.round(a*100)/100).toString();return (n<0?'-':n>0?'+':'')+'$'+t}
 function vCal(){
@@ -224,7 +328,7 @@ function vCal(){
     cells+=`<div class="wkc ${wn?(wp>0?'pos':wp<0?'neg':''):''}"><span>SEM ${w+1}</span><b class="${wn?cls(wp):'m'}">${wn?dm(wp):'$0'}</b><span>${wn} trade${wn>1?'s':''}</span></div>`;
   }
   const leg=[['#8f1d1d','Grosse perte'],['#d9534f','Perte modérée'],['#efb0b0','Petite perte'],['#3a4350','Aucun trade'],['#8fd3a0','Petit gain'],['#3fae5a','Gain modéré'],['#14702f','Gros gain']];
-  return `<h1>Journal <small>ICT / SMC</small></h1>
+  return `<h1>Journal <small>ICT / SMC <span class="syncst">${syncLabel()}</span></small></h1>
   ${storageOK?'':'<div class="warn">Sauvegarde automatique indisponible dans ce navigateur : exportez régulièrement vos données (onglet Réglages).</div>'}
   <div class="kpis">
     <div class="kpi"><span>P&amp;L du mois</span><b class="${cls(mp)}">${money(mp,true)}</b></div>
@@ -274,7 +378,7 @@ function vStats(){
    <div class="kpi"><span>Drawdown max</span><b class="r">${money(-s.mdd)}</b><span>${s.mddPct.toFixed(1)}%</span></div>
   </div>
   <div class="card"><h3>Courbe d’équité</h3>${equitySVG(s.curve,S.capital)}</div>
-  <div class="card"><h3>Détails</h3>
+  <div class="statgrid"><div class="card"><h3>Détails</h3>
    <div class="row sp grow"><span class="m">Gain moyen</span><b class="g">${money(s.avgW,true)}</b></div>
    <div class="row sp grow"><span class="m">Perte moyenne</span><b class="r">${money(s.avgL)}</b></div>
    <div class="row sp grow"><span class="m">Meilleur / pire trade</span><b><span class="g">${money(s.best,true)}</span> / <span class="r">${money(s.worst)}</span></b></div>
@@ -291,14 +395,20 @@ function vStats(){
   const mk=group(L.filter(t=>t.mistake&&t.mistake!=='Aucune'),'mistake');
   h+=`<div class="card"><h3>Discipline</h3>${line('Plan respecté',ok)}${line('Hors plan',ko)}
    ${mk.map(x=>`<div class="row sp grow"><span class="m">${esc(x.k)} (${x.n})</span><b class="${cls(x.pnl)}">${money(x.pnl,true)}</b></div>`).join('')}</div>`;
-  return h;
+  return h+'</div>';
 }
 function vSet(){
   return `<h1>Réglages</h1>
   <div class="card"><label style="margin-top:0">Capital de départ ($)</label>
    <div class="row"><input id="cap" inputmode="decimal" value="${S.capital}"><button class="btn" data-act="cap">OK</button></div></div>
+  <div class="card"><h3>Synchronisation (GitHub)</h3>
+   <p class="m" style="margin:0 0 6px;font-size:13px">Retrouvez trades et captures sur tous vos appareils grâce à un dépôt GitHub <b>privé</b>.</p>
+   <label>Dépôt (utilisateur/nom)</label><input id="sy_repo" value="${esc(SYNC?SYNC.repo:'')}" placeholder="souleyniang75-arch/journal-data" autocapitalize="off" autocorrect="off" spellcheck="false">
+   <label>Jeton d’accès (github_pat_…)</label><input id="sy_tok" type="password" value="${esc(SYNC?SYNC.token:'')}" autocapitalize="off" autocorrect="off" spellcheck="false">
+   <div class="row" style="margin-top:10px"><button class="btn" data-act="sysave" style="flex:1">${SYNC?'Mettre à jour':'Connecter'}</button>${SYNC?'<button class="btn sec" data-act="synow">Synchroniser</button><button class="btn sec" data-act="syoff">Déconnecter</button>':''}</div>
+   <div class="m syncst" style="font-size:12.5px;margin-top:8px">${syncLabel()}</div></div>
   <div class="card"><h3>Sauvegarde</h3>
-   <p class="m" style="margin:0 0 10px;font-size:13px">Vos trades sont enregistrés sur cet appareil. Copiez la sauvegarde pour la conserver ou la transférer. Les captures d’écran restent sur cet appareil et ne sont pas incluses dans l’export.</p>
+   <p class="m" style="margin:0 0 10px;font-size:13px">Vos trades sont enregistrés sur cet appareil. Copiez la sauvegarde pour la conserver ou la transférer. Les captures ne sont pas incluses dans l’export : elles voyagent par la synchronisation.</p>
    <div class="row"><button class="btn sec" data-act="expjson" style="flex:1">Exporter JSON</button><button class="btn sec" data-act="expcsv" style="flex:1">Exporter CSV</button></div>
    <textarea class="box" id="io" placeholder="Export ici, ou collez une sauvegarde JSON pour importer" style="margin-top:10px"></textarea>
    <div class="row" style="margin-top:8px"><button class="btn sec" data-act="copy" style="flex:1">Copier</button><button class="btn" data-act="imp" style="flex:1">Importer</button></div>
@@ -399,7 +509,7 @@ document.addEventListener('click',async e=>{
   else if(a==='save'){
     readForm();
     if(!form.date||!form.pair||form.pnl==null){$('#ferr').textContent='Date, paire et P&L sont obligatoires.';return}
-    form._orig.filter(i=>!form.imgs.includes(i)).forEach(delImg);delete form._orig;
+    form._orig.filter(i=>!form.imgs.includes(i)).forEach(delImg);delete form._orig;form.u=Date.now();
     if(form.id){const i=S.trades.findIndex(x=>x.id===form.id);S.trades[i]=form}else{form.id=uid();S.trades.push(form)}
     save();const d=form.date;
     const [y,m]=d.split('-').map(Number);cy=y;cm=m-1;
@@ -407,9 +517,9 @@ document.addEventListener('click',async e=>{
   }
   else if(a==='del'){
     if(!delArm){delArm=true;el.textContent='Confirmer la suppression';return}
-    delArm=false;(S.trades.find(x=>x.id===form.id)?.imgs||[]).forEach(delImg);S.trades=S.trades.filter(x=>x.id!==form.id);save();form=null;closeM();render();
+    delArm=false;(S.trades.find(x=>x.id===form.id)?.imgs||[]).forEach(delImg);S.trades=S.trades.filter(x=>x.id!==form.id);S.tomb[form.id]=Date.now();save();form=null;closeM();render();
   }
-  else if(a==='cap'){const v=num($('#cap').value);if(v!=null&&v>=0){S.capital=v;save();render()}}
+  else if(a==='cap'){const v=num($('#cap').value);if(v!=null&&v>=0){S.capital=v;S.cu=Date.now();save();render()}}
   else if(a==='expjson'){$('#io').value=JSON.stringify(S);$('#iomsg').textContent='Sauvegarde générée : copiez-la.'}
   else if(a==='expcsv'){$('#io').value=toCSV();$('#iomsg').textContent='CSV généré : copiez-le pour Excel / Sheets.'}
   else if(a==='copy'){
@@ -420,20 +530,31 @@ document.addEventListener('click',async e=>{
     try{
       const o=JSON.parse($('#io').value);
       if(!o||!Array.isArray(o.trades))throw 0;
-      S={capital:+o.capital||1000,trades:o.trades.filter(t=>t&&t.date&&typeof t.pnl==='number').map(t=>Object.assign({id:uid()},t))};
+      const nt=o.trades.filter(t=>t&&t.date&&typeof t.pnl==='number').map(t=>Object.assign({id:uid()},t,{u:Date.now()}));const keep=new Set(nt.map(t=>t.id)),tb=Object.assign({},S.tomb||{});S.trades.forEach(t=>{if(!keep.has(t.id))tb[t.id]=Date.now()});S={capital:+o.capital||1000,cu:Date.now(),tomb:tb,trades:nt};
       save();render();
       setTimeout(()=>{const m=$('#iomsg');if(m)m.textContent='Import réussi : '+S.trades.length+' trades.'},0);
     }catch(_){$('#iomsg').textContent='Format invalide : collez une sauvegarde JSON exportée ici.'}
   }
+  else if(a==='sysave'){
+    const repo=$('#sy_repo').value.trim(),token=$('#sy_tok').value.trim();
+    if(!/^[\w.-]+\/[\w.-]+$/.test(repo)||token.length<20){setSync('err','dépôt ou jeton invalide');return}
+    SYNC={repo,token};try{localStorage.setItem(SKEY,JSON.stringify(SYNC))}catch(_){}
+    syncNow();
+  }
+  else if(a==='synow'){syncNow()}
+  else if(a==='syoff'){SYNC=null;try{localStorage.removeItem(SKEY)}catch(_){}setSync('off','');render()}
   else if(a==='reset'){
-    if(!rstArm){rstArm=true;el.textContent='Confirmer : tout effacer';return}
-    rstArm=false;S={capital:S.capital,trades:[]};save();render();
+    if(!rstArm){rstArm=true;el.textContent='Confirmer : tout effacer (aussi sur les autres appareils synchronisés)';return}
+    rstArm=false;const nw=Date.now();S.trades.forEach(t=>{S.tomb[t.id]=nw});S.trades=[];save();render();
   }
 });
 load();render();
 if('serviceWorker' in navigator&&location.protocol.startsWith('http')){navigator.serviceWorker.register('sw.js').catch(()=>{})}
 if(navigator.storage&&navigator.storage.persist){navigator.storage.persist().catch(()=>{})}
-idbOpen().then(d=>{DB=d;return idbAll()}).then(()=>{if(!document.querySelector('.sheet'))render()});
+idbOpen().then(d=>{DB=d;return idbAll()}).then(()=>{if(!document.querySelector('.sheet'))render();syncNow()});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)scheduleSync(300)});
+setInterval(()=>{if(!document.hidden)scheduleSync(100)},90000);
+let wasWide=innerWidth>=760;window.addEventListener('resize',()=>{const w=innerWidth>=760;if(w!==wasWide){wasWide=w;if(!document.querySelector('.sheet'))render()}});
 </script>
 </body>
 </html>
